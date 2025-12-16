@@ -27,6 +27,11 @@ const corsHeaders = {
 // ============== Token 管理 ==============
 
 async function getAccessToken(env) {
+  // 检查 KV 是否已配置
+  if (!env.CFG) {
+    throw new Error('KV namespace "CFG" not configured. Please bind KV in Cloudflare Dashboard.');
+  }
+
   // 优先从 KV 获取 API Key
   const apiKey = await env.CFG.get('iflow_api_key');
   if (apiKey) {
@@ -750,6 +755,22 @@ export default {
     }
 
     if (url.pathname === '/debug') {
+      // 检查 KV 是否配置
+      if (!env.CFG) {
+        return new Response(JSON.stringify({
+          status: 'error',
+          error: 'KV namespace "CFG" not configured',
+          hint: 'Please create a KV namespace and bind it to this Worker in Cloudflare Dashboard',
+          steps: [
+            '1. Go to Workers & Pages → KV → Create namespace → Name: "CFG"',
+            '2. Go to your Worker → Settings → Bindings',
+            '3. Add binding → KV Namespace → Variable name: "CFG"',
+          ],
+        }, null, 2), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
       const hasApiKey = !!(await env.CFG.get('iflow_api_key'));
       const baseUrl = await env.CFG.get('iflow_openai_base') || env.IFLOW_OPENAI_BASE;
       const path = await env.CFG.get('iflow_openai_path') || env.IFLOW_OPENAI_PATH;
@@ -757,6 +778,7 @@ export default {
       return new Response(JSON.stringify({
         status: 'ok',
         config: {
+          kv_bound: true,
           has_api_key: hasApiKey,
           base_url: baseUrl || '(not set)',
           path: path || '(not set)',
@@ -773,6 +795,7 @@ export default {
         service: 'anthropic-bridge',
         version: '2.0',
         features: ['tools', 'streaming', 'multimodal'],
+        kv_configured: !!env.CFG,
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
