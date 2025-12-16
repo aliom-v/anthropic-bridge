@@ -1,0 +1,23 @@
+{
+  "name": "anthropic-bridge",
+  "version": "1.0.0",
+  "description": "Anthropic API gateway that converts requests to OpenAI format for iFlow",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "anthropic",
+    "openai",
+    "cloudflare-workers",
+    "api-gateway",
+    "claude-code"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
