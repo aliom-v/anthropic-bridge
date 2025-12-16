@@ -111,17 +111,9 @@ async function mapModel(model, env) {
     }
   }
 
-  // 默认映射规则
-  const defaultMapping = {
-    'claude-3-5-sonnet-latest': env.DEFAULT_MODEL || 'gpt-4',
-    'claude-3-5-sonnet-20241022': env.DEFAULT_MODEL || 'gpt-4',
-    'claude-3-opus-latest': env.DEFAULT_MODEL || 'gpt-4',
-    'claude-3-opus-20240229': env.DEFAULT_MODEL || 'gpt-4',
-    'claude-3-sonnet-20240229': env.DEFAULT_MODEL || 'gpt-4',
-    'claude-3-haiku-20240307': env.DEFAULT_MODEL || 'gpt-3.5-turbo',
-  };
-
-  return defaultMapping[model] || env.DEFAULT_MODEL || model;
+  // 如果没有映射，直接透传原始模型名
+  // 这样可以直接使用 iFlow 支持的模型名如 Qwen3-Max, Kimi-K2 等
+  return model;
 }
 
 // ============== 请求转换：Anthropic → OpenAI ==============
