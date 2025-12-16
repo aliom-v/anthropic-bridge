@@ -3,6 +3,8 @@
  *
  * 对外提供 Anthropic /v1/messages 接口
  * 对内转发到 iFlow (OpenAI-compatible) API
+ *
+ * 支持：工具调用、流式响应、多模态
  */
 
 // ============== 工具函数 ==============
@@ -25,17 +27,16 @@ const corsHeaders = {
 // ============== Token 管理 ==============
 
 async function getAccessToken(env) {
-  // 优先从 KV 获取 token
-  const token = await env.CFG.get('iflow_access_token');
-  const exp = Number(await env.CFG.get('iflow_expires_at') || '0');
-
-  // 如果有 API Key 模式（不过期），直接使用
+  // 优先从 KV 获取 API Key
   const apiKey = await env.CFG.get('iflow_api_key');
   if (apiKey) {
     return apiKey;
   }
 
-  // Token 模式：检查是否需要刷新（提前 60 秒）
+  // Token 模式
+  const token = await env.CFG.get('iflow_access_token');
+  const exp = Number(await env.CFG.get('iflow_expires_at') || '0');
+
   if (!token || exp - nowSec() < 60) {
     const refreshed = await refreshAccessToken(env);
     return refreshed;
@@ -44,16 +45,11 @@ async function getAccessToken(env) {
   return token;
 }
 
-/**
- * 刷新 Access Token
- * 根据 iFlow 的实际刷新接口修改此函数
- */
 async function refreshAccessToken(env) {
   const refreshToken = await env.CFG.get('iflow_refresh_token');
   const refreshUrl = await env.CFG.get('iflow_refresh_url');
 
   if (!refreshToken) {
-    // 如果没有 refresh_token，尝试使用 API Key
     const apiKey = await env.CFG.get('iflow_api_key');
     if (apiKey) return apiKey;
     throw new Error('Missing iflow_refresh_token or iflow_api_key in KV');
@@ -63,12 +59,9 @@ async function refreshAccessToken(env) {
     throw new Error('Missing iflow_refresh_url in KV');
   }
 
-  // 调用 iFlow 刷新接口（根据实际接口格式修改）
   const resp = await fetch(refreshUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
@@ -81,13 +74,10 @@ async function refreshAccessToken(env) {
   }
 
   const data = await resp.json();
-
-  // 假设返回格式: { access_token, expires_in, refresh_token? }
   const exp = nowSec() + (data.expires_in || 3600);
   await env.CFG.put('iflow_access_token', data.access_token);
   await env.CFG.put('iflow_expires_at', String(exp));
 
-  // 如果返回了新的 refresh_token，也更新
   if (data.refresh_token) {
     await env.CFG.put('iflow_refresh_token', data.refresh_token);
   }
@@ -98,7 +88,6 @@ async function refreshAccessToken(env) {
 // ============== 模型映射 ==============
 
 async function mapModel(model, env) {
-  // 从 KV 获取模型映射表
   const mappingStr = await env.CFG.get('model_mapping');
   if (mappingStr) {
     try {
@@ -110,10 +99,35 @@ async function mapModel(model, env) {
       console.error('Failed to parse model_mapping:', e);
     }
   }
-
-  // 如果没有映射，直接透传原始模型名
-  // 这样可以直接使用 iFlow 支持的模型名如 Qwen3-Max, Kimi-K2 等
+  // 直接透传模型名
   return model;
+}
+
+// ============== 工具转换：Anthropic → OpenAI ==============
+
+function anthropicToolsToOpenAI(tools) {
+  if (!tools || !Array.isArray(tools)) return undefined;
+
+  return tools.map(tool => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description || '',
+      parameters: tool.input_schema || { type: 'object', properties: {} },
+    },
+  }));
+}
+
+function anthropicToolChoiceToOpenAI(toolChoice) {
+  if (!toolChoice) return undefined;
+
+  if (toolChoice.type === 'auto') return 'auto';
+  if (toolChoice.type === 'any') return 'required';
+  if (toolChoice.type === 'none') return 'none';
+  if (toolChoice.type === 'tool' && toolChoice.name) {
+    return { type: 'function', function: { name: toolChoice.name } };
+  }
+  return undefined;
 }
 
 // ============== 请求转换：Anthropic → OpenAI ==============
@@ -127,7 +141,6 @@ async function anthropicToOpenAI(body, env) {
     if (typeof body.system === 'string') {
       messages.push({ role: 'system', content: body.system });
     } else if (Array.isArray(body.system)) {
-      // Anthropic 支持 system 为数组格式
       const systemText = body.system
         .filter(item => item.type === 'text')
         .map(item => item.text)
@@ -140,11 +153,25 @@ async function anthropicToOpenAI(body, env) {
 
   // 转换 messages
   for (const msg of body.messages || []) {
-    const content = convertContent(msg.content);
-    messages.push({
-      role: msg.role,
-      content: content,
-    });
+    if (msg.role === 'user') {
+      messages.push({
+        role: 'user',
+        content: convertContent(msg.content),
+      });
+    } else if (msg.role === 'assistant') {
+      // 处理 assistant 消息（可能包含工具调用）
+      const assistantMsg = convertAssistantMessage(msg);
+      messages.push(assistantMsg);
+
+      // 如果有 tool_use，需要添加对应的 tool 结果
+    } else if (msg.role === 'tool') {
+      // Anthropic 的 tool_result 转换为 OpenAI 的 tool message
+      messages.push({
+        role: 'tool',
+        tool_call_id: msg.tool_use_id,
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+      });
+    }
   }
 
   const openaiBody = {
@@ -159,14 +186,56 @@ async function anthropicToOpenAI(body, env) {
   if (body.top_p !== undefined) openaiBody.top_p = body.top_p;
   if (body.stop) openaiBody.stop = body.stop;
 
+  // 工具相关
+  const tools = anthropicToolsToOpenAI(body.tools);
+  if (tools && tools.length > 0) {
+    openaiBody.tools = tools;
+    const toolChoice = anthropicToolChoiceToOpenAI(body.tool_choice);
+    if (toolChoice) {
+      openaiBody.tool_choice = toolChoice;
+    }
+  }
+
   return openaiBody;
 }
 
-/**
- * 转换 content 格式
- * Anthropic: [{ type: "text", text: "..." }] 或 string
- * OpenAI: string 或 [{ type: "text", text: "..." }, { type: "image_url", ... }]
- */
+function convertAssistantMessage(msg) {
+  const content = msg.content;
+
+  // 简单文本
+  if (typeof content === 'string') {
+    return { role: 'assistant', content };
+  }
+
+  if (!Array.isArray(content)) {
+    return { role: 'assistant', content: '' };
+  }
+
+  // 检查是否有工具调用
+  const toolUses = content.filter(item => item.type === 'tool_use');
+  const textParts = content.filter(item => item.type === 'text');
+
+  const textContent = textParts.map(item => item.text).join('');
+
+  if (toolUses.length > 0) {
+    // 有工具调用
+    return {
+      role: 'assistant',
+      content: textContent || null,
+      tool_calls: toolUses.map(tu => ({
+        id: tu.id,
+        type: 'function',
+        function: {
+          name: tu.name,
+          arguments: JSON.stringify(tu.input || {}),
+        },
+      })),
+    };
+  }
+
+  return { role: 'assistant', content: textContent };
+}
+
 function convertContent(content) {
   if (typeof content === 'string') {
     return content;
@@ -176,21 +245,17 @@ function convertContent(content) {
     return '';
   }
 
-  // 检查是否只有文本
   const hasOnlyText = content.every(item => item.type === 'text');
-
   if (hasOnlyText) {
-    // 简化为纯文本
     return content.map(item => item.text).join('');
   }
 
-  // 有多模态内容，转换为 OpenAI 格式
+  // 多模态内容
   return content.map(item => {
     if (item.type === 'text') {
       return { type: 'text', text: item.text };
     }
     if (item.type === 'image') {
-      // Anthropic 图片格式转 OpenAI
       if (item.source?.type === 'base64') {
         return {
           type: 'image_url',
@@ -206,31 +271,65 @@ function convertContent(content) {
         };
       }
     }
-    // 其他类型原样返回
+    if (item.type === 'tool_result') {
+      // 工具结果在上层处理
+      return null;
+    }
     return item;
-  });
+  }).filter(Boolean);
 }
 
 // ============== 响应转换：OpenAI → Anthropic ==============
 
-function openAIToAnthropicJson(openaiJson, model, inputTokens = 0) {
+function openAIToAnthropicJson(openaiJson, model) {
   const choice = openaiJson?.choices?.[0];
   const message = choice?.message;
-  const content = message?.content ?? '';
-
-  // 计算 token 使用量
   const usage = openaiJson?.usage || {};
+
+  // 构建 content 数组
+  const contentBlocks = [];
+
+  // 处理文本内容（支持 reasoning_content 用于 thinking 模型）
+  const textContent = message?.content || message?.reasoning_content || '';
+  if (textContent) {
+    contentBlocks.push({ type: 'text', text: textContent });
+  }
+
+  // 处理工具调用
+  if (message?.tool_calls && Array.isArray(message.tool_calls)) {
+    for (const tc of message.tool_calls) {
+      if (tc.type === 'function') {
+        let inputArgs = {};
+        try {
+          inputArgs = JSON.parse(tc.function.arguments || '{}');
+        } catch (e) {
+          inputArgs = {};
+        }
+        contentBlocks.push({
+          type: 'tool_use',
+          id: tc.id || generateId('toolu'),
+          name: tc.function.name,
+          input: inputArgs,
+        });
+      }
+    }
+  }
+
+  // 如果没有任何内容，添加空文本块
+  if (contentBlocks.length === 0) {
+    contentBlocks.push({ type: 'text', text: '' });
+  }
 
   return {
     id: generateId('msg'),
     type: 'message',
     role: 'assistant',
     model: model,
-    content: [{ type: 'text', text: content }],
+    content: contentBlocks,
     stop_reason: mapStopReason(choice?.finish_reason),
     stop_sequence: null,
     usage: {
-      input_tokens: usage.prompt_tokens || inputTokens,
+      input_tokens: usage.prompt_tokens || 0,
       output_tokens: usage.completion_tokens || 0,
     },
   };
@@ -257,14 +356,18 @@ function createStreamTransformer(model) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let buffer = '';
-  let contentBlockStarted = false;
+  let contentBlockIndex = 0;
+  let currentBlockStarted = false;
   let inputTokens = 0;
   let outputTokens = 0;
   const messageId = generateId('msg');
 
+  // 工具调用状态
+  let toolCalls = {};
+  let currentToolCallId = null;
+
   return new TransformStream({
     start(controller) {
-      // 发送 message_start 事件
       controller.enqueue(encoder.encode(sseLine({
         type: 'message_start',
         message: {
@@ -301,7 +404,6 @@ function createStreamTransformer(model) {
           continue;
         }
 
-        // 提取 usage 信息
         if (evt.usage) {
           inputTokens = evt.usage.prompt_tokens || inputTokens;
           outputTokens = evt.usage.completion_tokens || outputTokens;
@@ -310,38 +412,87 @@ function createStreamTransformer(model) {
         const delta = evt?.choices?.[0]?.delta;
         if (!delta) continue;
 
-        // 发送 content_block_start（仅第一次）
-        if (delta.content && !contentBlockStarted) {
-          contentBlockStarted = true;
+        // 处理文本内容
+        const textContent = delta.content || delta.reasoning_content;
+        if (textContent) {
+          if (!currentBlockStarted) {
+            currentBlockStarted = true;
+            controller.enqueue(encoder.encode(sseLine({
+              type: 'content_block_start',
+              index: contentBlockIndex,
+              content_block: { type: 'text', text: '' },
+            })));
+          }
+
           controller.enqueue(encoder.encode(sseLine({
-            type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'text', text: '' },
+            type: 'content_block_delta',
+            index: contentBlockIndex,
+            delta: { type: 'text_delta', text: textContent },
           })));
         }
 
-        // 发送文本增量
-        if (delta.content) {
-          outputTokens++;
-          controller.enqueue(encoder.encode(sseLine({
-            type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'text_delta', text: delta.content },
-          })));
+        // 处理工具调用
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const tcIndex = tc.index ?? 0;
+            const tcId = tc.id || currentToolCallId;
+
+            if (tc.id) {
+              // 新的工具调用开始
+              if (currentBlockStarted) {
+                controller.enqueue(encoder.encode(sseLine({
+                  type: 'content_block_stop',
+                  index: contentBlockIndex,
+                })));
+                contentBlockIndex++;
+                currentBlockStarted = false;
+              }
+
+              currentToolCallId = tc.id;
+              toolCalls[tcId] = {
+                name: tc.function?.name || '',
+                arguments: '',
+              };
+
+              controller.enqueue(encoder.encode(sseLine({
+                type: 'content_block_start',
+                index: contentBlockIndex,
+                content_block: {
+                  type: 'tool_use',
+                  id: tcId,
+                  name: tc.function?.name || '',
+                  input: {},
+                },
+              })));
+              currentBlockStarted = true;
+            }
+
+            // 累积参数
+            if (tc.function?.arguments && currentToolCallId) {
+              toolCalls[currentToolCallId].arguments += tc.function.arguments;
+
+              controller.enqueue(encoder.encode(sseLine({
+                type: 'content_block_delta',
+                index: contentBlockIndex,
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: tc.function.arguments,
+                },
+              })));
+            }
+          }
         }
 
         // 检查是否结束
         const finishReason = evt?.choices?.[0]?.finish_reason;
         if (finishReason) {
-          // 发送 content_block_stop
-          if (contentBlockStarted) {
+          if (currentBlockStarted) {
             controller.enqueue(encoder.encode(sseLine({
               type: 'content_block_stop',
-              index: 0,
+              index: contentBlockIndex,
             })));
           }
 
-          // 发送 message_delta
           controller.enqueue(encoder.encode(sseLine({
             type: 'message_delta',
             delta: {
@@ -355,7 +506,6 @@ function createStreamTransformer(model) {
     },
 
     flush(controller) {
-      // 发送 message_stop
       controller.enqueue(encoder.encode(sseLine({
         type: 'message_stop',
       })));
@@ -380,9 +530,8 @@ async function handleMessages(request, env) {
     });
   }
 
-  const originalModel = body.model || 'claude-3-5-sonnet-latest';
+  const originalModel = body.model || 'Qwen3-Max';
 
-  // 获取 access token
   let token;
   try {
     token = await getAccessToken(env);
@@ -393,21 +542,14 @@ async function handleMessages(request, env) {
     });
   }
 
-  // 转换请求
   const openaiPayload = await anthropicToOpenAI(body, env);
 
-  // 获取上游地址
   const baseUrl = await env.CFG.get('iflow_openai_base') || env.IFLOW_OPENAI_BASE;
   const path = await env.CFG.get('iflow_openai_path') || env.IFLOW_OPENAI_PATH;
 
-  // 早期配置检查
   if (!baseUrl || !path) {
     return new Response(JSON.stringify({
       error: 'Upstream API not configured',
-      details: {
-        base_url: baseUrl ? '(set)' : '(missing - set iflow_openai_base in KV or IFLOW_OPENAI_BASE env var)',
-        path: path ? '(set)' : '(missing - set iflow_openai_path in KV or IFLOW_OPENAI_PATH env var)',
-      },
       hint: 'Use /debug endpoint to check configuration status',
     }), {
       status: 500,
@@ -417,8 +559,8 @@ async function handleMessages(request, env) {
 
   const upstreamUrl = `${baseUrl}${path}`;
 
-  // 发送请求到 iFlow
-  console.log('Sending request to upstream:', upstreamUrl);
+  console.log('Request to upstream:', upstreamUrl, JSON.stringify(openaiPayload));
+
   const upstream = await fetch(upstreamUrl, {
     method: 'POST',
     headers: {
@@ -428,11 +570,15 @@ async function handleMessages(request, env) {
     body: JSON.stringify(openaiPayload),
   });
 
-  // 处理流式响应
+  // 流式响应
   if (body.stream) {
     if (!upstream.ok || !upstream.body) {
       const errText = await upstream.text();
-      return new Response(errText, {
+      return new Response(JSON.stringify({
+        error: 'Upstream error',
+        status: upstream.status,
+        details: errText,
+      }), {
         status: upstream.status,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -452,18 +598,16 @@ async function handleMessages(request, env) {
     });
   }
 
-  // 处理非流式响应
+  // 非流式响应
   const upstreamText = await upstream.text();
   let json = null;
 
   try {
     json = JSON.parse(upstreamText);
   } catch (e) {
-    console.error('Failed to parse upstream response:', upstreamText);
     return new Response(JSON.stringify({
       error: 'Failed to parse upstream response',
-      upstream_status: upstream.status,
-      upstream_body: upstreamText.substring(0, 500),
+      upstream_body: upstreamText.substring(0, 1000),
     }), {
       status: 502,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -472,7 +616,7 @@ async function handleMessages(request, env) {
 
   if (!upstream.ok) {
     return new Response(JSON.stringify({
-      error: json?.error || 'Upstream error',
+      error: json?.error || json?.msg || 'Upstream error',
       upstream_status: upstream.status,
       upstream_response: json,
     }), {
@@ -481,11 +625,9 @@ async function handleMessages(request, env) {
     });
   }
 
-  // 验证上游响应格式
   if (!json?.choices?.[0]?.message) {
-    console.error('Invalid upstream response format:', JSON.stringify(json));
     return new Response(JSON.stringify({
-      error: 'Invalid upstream response format - missing choices[0].message',
+      error: 'Invalid upstream response format',
       upstream_response: json,
     }), {
       status: 502,
@@ -501,16 +643,18 @@ async function handleMessages(request, env) {
 }
 
 async function handleModels(request, env) {
-  // 返回模型列表（给部分 GUI 客户端探测用）
+  // 返回 iFlow 支持的模型列表
   const models = {
     object: 'list',
     data: [
-      { id: 'claude-3-5-sonnet-latest', object: 'model', created: 1700000000, owned_by: 'anthropic' },
-      { id: 'claude-3-5-sonnet-20241022', object: 'model', created: 1700000000, owned_by: 'anthropic' },
-      { id: 'claude-3-opus-latest', object: 'model', created: 1700000000, owned_by: 'anthropic' },
-      { id: 'claude-3-opus-20240229', object: 'model', created: 1700000000, owned_by: 'anthropic' },
-      { id: 'claude-3-sonnet-20240229', object: 'model', created: 1700000000, owned_by: 'anthropic' },
-      { id: 'claude-3-haiku-20240307', object: 'model', created: 1700000000, owned_by: 'anthropic' },
+      { id: 'Qwen3-Max', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Qwen3-Max-Preview', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Kimi-K2', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Kimi-K2-Instruct-0905', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'GLM-4.6', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Qwen3-VL-Plus', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Qwen3-235B-A22B-Thinking', object: 'model', created: 1700000000, owned_by: 'iflow' },
+      { id: 'Qwen3-235B-A22B-Instruct', object: 'model', created: 1700000000, owned_by: 'iflow' },
     ],
   };
 
@@ -526,7 +670,7 @@ function checkAdminAuth(request, env) {
   const adminKey = env.ADMIN_KEY;
 
   if (!adminKey || adminKey === 'your-admin-key-here') {
-    return false; // 未配置管理密钥
+    return false;
   }
 
   return authHeader === `Bearer ${adminKey}`;
@@ -541,17 +685,11 @@ async function handleAdminConfig(request, env) {
   }
 
   if (request.method === 'GET') {
-    // 读取配置（脱敏显示）
     const config = {
       iflow_openai_base: await env.CFG.get('iflow_openai_base'),
       iflow_openai_path: await env.CFG.get('iflow_openai_path'),
-      iflow_access_token: (await env.CFG.get('iflow_access_token')) ? '***configured***' : null,
-      iflow_refresh_token: (await env.CFG.get('iflow_refresh_token')) ? '***configured***' : null,
-      iflow_api_key: (await env.CFG.get('iflow_api_key')) ? '***configured***' : null,
-      iflow_expires_at: await env.CFG.get('iflow_expires_at'),
-      iflow_refresh_url: await env.CFG.get('iflow_refresh_url'),
+      iflow_api_key: (await env.CFG.get('iflow_api_key')) ? '***' : null,
       model_mapping: await env.CFG.get('model_mapping'),
-      default_model: env.DEFAULT_MODEL,
     };
 
     return new Response(JSON.stringify(config, null, 2), {
@@ -560,9 +698,7 @@ async function handleAdminConfig(request, env) {
   }
 
   if (request.method === 'POST' || request.method === 'PUT') {
-    // 写入配置
     const body = await request.json();
-
     const allowedKeys = [
       'iflow_openai_base',
       'iflow_openai_path',
@@ -597,12 +733,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 处理 CORS 预检请求
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 路由
     if (url.pathname === '/v1/messages') {
       return handleMessages(request, env);
     }
@@ -615,42 +749,30 @@ export default {
       return handleAdminConfig(request, env);
     }
 
-    // 调试端点（显示配置状态，不显示敏感值）
     if (url.pathname === '/debug') {
       const hasApiKey = !!(await env.CFG.get('iflow_api_key'));
-      const hasAccessToken = !!(await env.CFG.get('iflow_access_token'));
-      const hasRefreshToken = !!(await env.CFG.get('iflow_refresh_token'));
       const baseUrl = await env.CFG.get('iflow_openai_base') || env.IFLOW_OPENAI_BASE;
       const path = await env.CFG.get('iflow_openai_path') || env.IFLOW_OPENAI_PATH;
 
       return new Response(JSON.stringify({
-        config_status: {
+        status: 'ok',
+        config: {
           has_api_key: hasApiKey,
-          has_access_token: hasAccessToken,
-          has_refresh_token: hasRefreshToken,
-          base_url_configured: !!baseUrl,
           base_url: baseUrl || '(not set)',
-          path_configured: !!path,
           path: path || '(not set)',
-          full_upstream_url: baseUrl && path ? `${baseUrl}${path}` : '(incomplete)',
-        },
-        env_vars: {
-          IFLOW_OPENAI_BASE: env.IFLOW_OPENAI_BASE || '(not set)',
-          IFLOW_OPENAI_PATH: env.IFLOW_OPENAI_PATH || '(not set)',
-          DEFAULT_MODEL: env.DEFAULT_MODEL || '(not set)',
-          ADMIN_KEY: env.ADMIN_KEY ? '(configured)' : '(not set)',
+          upstream_url: baseUrl && path ? `${baseUrl}${path}` : '(incomplete)',
         },
       }, null, 2), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    // 健康检查
     if (url.pathname === '/' || url.pathname === '/health') {
       return new Response(JSON.stringify({
         status: 'ok',
         service: 'anthropic-bridge',
-        endpoints: ['/v1/messages', '/v1/models', '/admin/config', '/debug'],
+        version: '2.0',
+        features: ['tools', 'streaming', 'multimodal'],
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
