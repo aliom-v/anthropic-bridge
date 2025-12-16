@@ -1,13 +1,13 @@
 name = "anthropic-bridge"
 main = "src/worker.js"
 compatibility_date = "2024-11-01"
-account_id = "d23dfe9378cf2c86bd03ce664006bd44"
+account_id = "你的AccountID"
 
 # KV 命名空间配置 - 部署前需要创建并填写实际 ID
 # 运行: wrangler kv:namespace create "CFG"
 # 然后把生成的 id 填到下面
 kv_namespaces = [
-  { binding = "CFG", id = "6fbeb0ec1d944de29e15e1c4fc008c69" }
+  { binding = "CFG", id = "你的KV-ID" }
 ]
 
 # 环境变量配置
@@ -20,4 +20,4 @@ IFLOW_OPENAI_PATH = "/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4"
 
 # 管理接口密钥 (用于 /admin/* 接口鉴权)
-ADMIN_KEY = "ab123456"
+ADMIN_KEY = "your-admin-key-here"
