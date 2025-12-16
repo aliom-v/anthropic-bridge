@@ -334,32 +334,49 @@ $env:ANTHROPIC_API_KEY = "any"
 
 ## 可用模型列表
 
-CLIProxyAPI 支持 iFlow 提供的所有模型：
+CLIProxyAPI 支持 iFlow 提供的所有模型。**注意：模型名称区分大小写，请使用小写。**
+
+### 推理模型（推荐）
+
+| 模型名称 | 说明 | 特点 |
+|---------|------|------|
+| `deepseek-v3.2` | DeepSeek V3.2 | 最新版本，综合能力强 |
+| `deepseek-v3.2-reasoner` | DeepSeek V3.2 推理版 | 深度推理 |
+| `deepseek-v3.2-chat` | DeepSeek V3.2 对话版 | 对话优化 |
+| `deepseek-v3.1` | DeepSeek V3.1 | 稳定版本 |
+| `deepseek-v3` | DeepSeek V3 | 经典版本 |
+| `deepseek-r1` | DeepSeek R1 | 推理模型 |
+| `qwen3-235b-a22b-thinking-2507` | 通义千问 思考模型 | 深度推理 |
+| `kimi-k2-thinking` | Kimi K2 思考版 | 深度推理 |
 
 ### 通用模型
 
 | 模型名称 | 说明 | 特点 |
 |---------|------|------|
-| `Qwen3-Max` | 通义千问3 旗舰版 | 综合能力强 |
-| `Qwen3-Max-Preview` | 通义千问3 预览版 | 最新特性 |
-| `Kimi-K2` | Kimi K2 | 长上下文 |
-| `Kimi-K2-Instruct-0905` | Kimi K2 指令版 | 指令遵循 |
-| `GLM-4.6` | 智谱 GLM-4.6 | 中文优化 |
+| `qwen3-max` | 通义千问3 旗舰版 | 综合能力强 |
+| `qwen3-max-preview` | 通义千问3 预览版 | 最新特性 |
+| `qwen3-235b-a22b-instruct` | 通义千问 指令版 | 复杂任务 |
+| `qwen3-235b` | 通义千问 235B | 大参数模型 |
+| `qwen3-coder-plus` | 通义千问 编程增强版 | 代码生成 |
+| `qwen3-32b` | 通义千问 32B | 轻量级 |
+| `glm-4.6` | 智谱 GLM-4.6 | 中文优化 |
+| `kimi-k2` | Kimi K2 | 长上下文 |
+| `kimi-k2-0905` | Kimi K2 0905版 | 指令遵循 |
+| `minimax-m2` | MiniMax M2 | 多模态 |
 
 ### 视觉模型
 
 | 模型名称 | 说明 | 特点 |
 |---------|------|------|
-| `Qwen3-VL-Plus` | 通义千问3 视觉版 | 图像理解 |
+| `qwen3-vl-plus` | 通义千问3 视觉版 | 图像理解 |
 
-### 推理模型
+### 其他模型
 
-| 模型名称 | 说明 | 特点 |
-|---------|------|------|
-| `Qwen3-235B-A22B-Thinking` | 通义千问3 思考模型 | 深度推理 |
-| `Qwen3-235B-A22B-Instruct` | 通义千问3 指令版 | 复杂任务 |
+| 模型名称 | 说明 |
+|---------|------|
+| `tstars2.0` | T-Stars 2.0 |
 
-> 模型名称直接透传到 iFlow API，使用 iFlow 支持的任意模型名即可。
+> **提示**：模型列表可能会更新，使用以下命令查看最新可用模型。
 
 ### 查看可用模型
 
@@ -394,7 +411,7 @@ curl -X POST http://你的VPS-IP:8080/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: any" \
   -d '{
-    "model": "Qwen3-Max",
+    "model": "glm-4.6",
     "max_tokens": 100,
     "messages": [{"role": "user", "content": [{"type": "text", "text": "你好"}]}]
   }'
@@ -403,7 +420,7 @@ curl -X POST http://你的VPS-IP:8080/v1/messages \
 curl -X POST http://你的VPS-IP:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen3-Max",
+    "model": "glm-4.6",
     "messages": [{"role": "user", "content": "你好"}],
     "max_tokens": 100
   }'
@@ -473,7 +490,7 @@ curl http://你的VPS-IP:8080/v1/models
 # 测试聊天
 curl -X POST http://你的VPS-IP:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"Qwen3-Max","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
+  -d '{"model":"glm-4.6","messages":[{"role":"user","content":"hi"}],"max_tokens":10}'
 ```
 
 ---
