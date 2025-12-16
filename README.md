@@ -253,7 +253,16 @@ cp ~/.iflow/oauth_creds.json ~/.cli-proxy-api/
 
 ### 方式 1：一键部署
 
-点击上方 **Deploy to Cloudflare Workers** 按钮。
+1. 点击上方 **Deploy to Cloudflare Workers** 按钮
+2. 登录 Cloudflare 账号，按提示完成部署
+3. 部署完成后，进入 Cloudflare Dashboard 创建 KV：
+   - Workers & Pages → KV → Create namespace → 名称填 `CFG`
+   - 复制创建的 KV ID
+4. 绑定 KV 到 Worker：
+   - Workers & Pages → 你的 Worker → Settings → Bindings
+   - Add binding → KV Namespace → Variable name: `CFG`，选择刚创建的 KV
+5. 修改 ADMIN_KEY：
+   - Settings → Variables → 编辑 `ADMIN_KEY` 为你的密钥
 
 ### 方式 2：手动部署
 
@@ -268,14 +277,15 @@ npx wrangler login
 
 # 创建 KV
 npx wrangler kv:namespace create "CFG"
-# 记录输出的 id
+# 记录输出的 id，填入 wrangler.toml
 
-# 编辑 wrangler.toml，填入 KV ID
 # 部署
 npm run deploy
 ```
 
 ### 配置上游 API
+
+部署完成后，通过管理接口配置上游 API：
 
 ```bash
 curl -X POST https://你的域名.workers.dev/admin/config \

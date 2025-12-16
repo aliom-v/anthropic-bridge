@@ -1,23 +1,21 @@
 name = "anthropic-bridge"
 main = "src/worker.js"
 compatibility_date = "2024-11-01"
-account_id = "你的AccountID"
 
-# KV 命名空间配置 - 部署前需要创建并填写实际 ID
-# 运行: wrangler kv:namespace create "CFG"
-# 然后把生成的 id 填到下面
+# KV 命名空间配置
+# 一键部署后需要手动创建 KV 并更新此 ID：
+# 1. 运行: npx wrangler kv:namespace create "CFG"
+# 2. 复制输出的 id 填到下面
+# 3. 重新部署: npm run deploy
 kv_namespaces = [
-  { binding = "CFG", id = "你的KV-ID" }
+  { binding = "CFG", id = "YOUR_KV_NAMESPACE_ID" }
 ]
 
 # 环境变量配置
 [vars]
-# iFlow OpenAI 兼容 API 地址
-IFLOW_OPENAI_BASE = "https://api.iflow.example.com"
-IFLOW_OPENAI_PATH = "/v1/chat/completions"
-
-# 默认模型名称 (iFlow 中的模型名)
-DEFAULT_MODEL = "gpt-4"
+# 默认模型名称
+DEFAULT_MODEL = "Qwen3-Max"
 
 # 管理接口密钥 (用于 /admin/* 接口鉴权)
-ADMIN_KEY = "your-admin-key-here"
+# 部署后请通过 Cloudflare Dashboard 修改此值
+ADMIN_KEY = "change-me-after-deploy"
