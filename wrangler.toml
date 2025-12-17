@@ -5,26 +5,18 @@ compatibility_date = "2024-11-01"
 # 环境变量配置
 [vars]
 # 默认模型名称
-DEFAULT_MODEL = "Qwen3-Max"
+DEFAULT_MODEL = "glm-4.6"
 
 # 管理接口密钥 (用于 /admin/* 接口鉴权)
-# 部署后请通过 Cloudflare Dashboard 修改此值
 ADMIN_KEY = "change-me-after-deploy"
 
 # ============================================
-# KV 命名空间配置说明
+# KV 配置说明
 # ============================================
-# 一键部署完成后，需要手动配置 KV：
-#
-# 方式 1：通过 Cloudflare Dashboard（推荐）
-#   1. Workers & Pages → KV → Create namespace → 名称填 "CFG"
-#   2. Workers & Pages → 你的 Worker → Settings → Bindings
-#   3. Add binding → KV Namespace → Variable name: "CFG"
-#
-# 方式 2：通过命令行
-#   1. npx wrangler kv:namespace create "CFG"
-#   2. 取消下面的注释并填入 ID：
-#   3. npm run deploy
+# 手动部署时：
+# 1. 在 Cloudflare Dashboard 创建 KV namespace
+# 2. 取消下面注释并填入你的 KV ID
+# 3. 运行 npm run deploy
 #
 # kv_namespaces = [
 #   { binding = "CFG", id = "你的KV-ID" }

@@ -342,5 +342,3 @@ curl http://localhost:8080/v1/models
 ## 技术支持
 
 - CLIProxyAPI：https://github.com/router-for-me/CLIProxyAPI
-- iFlow 论坛：https://vibex.iflow.cn
-- QQ 群：188637136
